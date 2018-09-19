@@ -28,27 +28,20 @@ using namespace std;
         check_dlsym_err();
 #endif
 
-namespace opencog {
-    namespace PythonEval {
-
-PythonIntegration::PythonIntegration(AtomSpace* as) {
+PythonIntegration::PythonIntegration() {
     logger().info("PyEval: Contructor");
 
     if(_singleton_instance)
     { 
-        throw opencog::RuntimeException(TRACE_INFO,
+        throw std::runtime_error(TRACE_INFO,
             "Attempting to initialize singleton PyEval a second time.");
         return;
     }
 
     this->_singleton_instance = this;
-    this->_atomspace = NULL;
     
     py_dload();
     py_init_env();
-    py_import_oc_pkg();
-    set_atomspace(as)
-    demo();
 }
 
 PythonIntegration::~PythonIntegration() {
@@ -198,7 +191,7 @@ void py_dload() {
 void py_init_env(){   
   // depending on the availability of python dev environments, we want
   // to initialize both environments 
-  //
+
 #if PY_2_BINDINGS
     if(this->_py2_api["Py_IsInitialized"]()) {
        _initialized_outside2 = true;
@@ -224,29 +217,6 @@ void py_init_env(){
 #endif
 }
 
-void py_load_oc_pkg() {
-#if PY_2_BINDINGS
-	PyObject* py_2_sys_path = this->_py2_api["PySys_GetObject"]((char*) "path");
-	this->_py2_api["PyList_Append"](py_2_sys_path, \
-            PyUnicode_FromString("@PYTHON2_SITE_PACKAGES@/opencog"));
-	this->_py2_api["PyRun_SimpleString"]("import opencog");
-#elif PY_3_BINDINGS
-	PyObject* py_3_sys_path = this->_py3_api["PySys_GetObject"]((char*) "path");
-	this->_py3_api["PyList_Append"](py_3_sys_path, \
-            PyUnicode_FromString("@PYTHON3_SITE_PACKAGES@/opencog"));
-	this->_py3_api["PyRun_SimpleString"]("import opencog");
-    this->_root
-#endif
-}  
-
-void set_atomspace(AtomSpace* as) {
-    this->_atomspace = py_atomspace(as);
-}
-
-PyObject* get_atomspace() {
-    return this->_atomspace;
-}
-
 PyObject* run_py_command(const char* command, int py_version) {
     map<string, boost::any> py_api;
 	
@@ -255,7 +225,7 @@ PyObject* run_py_command(const char* command, int py_version) {
 	} else if (py_version == 3) {
 		py_api = this-> _py3_api;
 	} else {
-		throw opencog::RuntimeException(TRACE_INFO,
+		throw std::runtime_error(TRACE_INFO,
                 "Please specify a correct Python version (either 2 or 3)");
 		continue; 
 	  }
@@ -328,12 +298,6 @@ PyObject* run_py_script(const char* py_file_path, const char * func_name, const 
     }
 }
 
-Handle apply(AtomSpace* as, const string& func, Handle varargs) {
-    SaveAS save_as(this, as);
-    
-    PyObject* returned_atom = run_py_script()
-}
-
 int check_shebang(const char* py_file_path) {
 	string she_bang;
 
@@ -374,34 +338,4 @@ void check_dlsym_err() {
                 return;
     }
 }
-
-void demo() {
-	// TODO
-    string path;
-    struct stat buffer; 
-    bool is_valid_file = false;
-   
-     do 
-    { 
-        cout << "Enter the valid absolute Path to a Python script:" << endl;
-        getline(cin, path);
-        is_valid_file = stat(path.c_str(), &buffer) == 0 ? true : false; 
-    } while (!is_valid_file);
-
-    string func_name;
-    cout << "Enter the function name" << endl;
-    getline(cin, func_name);
-
-    string args;
-    cout << "Enter the arguments" << endl;
-    getline(cin, args);
-    
-    run_py(path.c_str(), func_name.c_str(), args.c_str());
-    
-    cout << "Press Enter to Continue";
-    cin.ignore();
-
-}
-    } // namespace PythonEval
-} // namespace opencog
 #endif
