@@ -1,0 +1,407 @@
+#ifdef HAVE_CYTHON
+
+#include "PythonIntegration.h"
+using namespace std;
+
+
+/* 
+ * params: name:        The exact name of the Python C-API function/type
+ *         return_type: The return type of the Py C-API function
+ *         params:      The parameter types and names of the Py C-API function
+ */ 
+#if PY_2_BINDINGS && PY_3_BINDINGS
+#define dyn_load(name)                  \
+        name##_t* name = (name##_t*) dlsym(py2_handle, "##name##"); \
+        this->_py2_api["##name##"] = name;                     \
+        check_dlsym_err();                                             \
+        name##_t* name## = (name##_t*) dlsym(py3_handle, "##name##"); \
+        this->_py3_api["##name##"] = name;                     \
+        check_dlsym_err();                                             
+#elif PY_2_BINDINGS
+#define dyn_load(name)                  \
+        name##_t* name## = (name##_t*) dlsym(py2_handle, "##name##"); \
+			this->_py2_api["##name##"] = name;                     \
+	telif PY_3_BINDINGS
+#define dyn_load(name)                  \
+        name##_t* name## = (name##_t*) dlsym(py2_handle, "##name##"); \
+        this->_py3_api["##name##"] = name;                     \
+        check_dlsym_err();
+#endif
+
+namespace opencog {
+    namespace PythonEval {
+
+PythonIntegration::PythonIntegration(AtomSpace* as) {
+    logger().info("PyEval: Contructor");
+
+    if(_singleton_instance)
+    { 
+        throw opencog::RuntimeException(TRACE_INFO,
+            "Attempting to initialize singleton PyEval a second time.");
+        return;
+    }
+
+    this->_singleton_instance = this;
+    this->_atomspace = NULL;
+    
+    py_dload();
+    py_init_env();
+    py_import_oc_pkg();
+    set_atomspace(as)
+    demo();
+}
+
+PythonIntegration::~PythonIntegration() {
+#if PY_2_BINDINGS
+    this->_py2_api["PyEval_RestoreThread"](this->_main_thread_state2);
+
+    if(!_initialized_outside2 && this->_py2_api["Py_FinalizeEx"]() < 0)  {
+            throw opencog::RuntimeException(TRACE_INFO,
+                "Attempting to finalize an already finalized Python 2 env.");
+            return;
+    }
+    dlclose(this->py2_handle);
+#endif
+#if PY_3_BINDINGS
+    this->_py3_api["PyEval_RestoreThread"](this->_main_thread_state3);
+
+    if(!_initialized_outside3 && this->_py3_api["Py_FinalizeEx"]() < 0)  {
+            throw opencog::RuntimeException(TRACE_INFO,
+                "Attempting to finalize an already finalized Python 3 env.");
+            return;
+    }
+    dlclose(this->py3_handle);
+#endif
+}
+
+void py_dload() { 
+    logger().info("PyEval: py_dload_env");
+
+#if PY_2_BINDINGS
+    this->py2_handle = dlopen("@PYTHON2_LIBRARIES@", RTLD_LAZY);
+    check_dlopen_err(py2_handle);
+#endif
+#if PY_3_BINDINGS
+    this->py3_handle = dlopen("@PYTHON3_LIBRARIES@", RTLD_LAZY);
+    check_dlopen_err(this->py3_handle);
+#endif
+
+	// Types
+	typedef struct {} PyObject;
+	typedef struct {} PyThreadState;
+	typedef int PyGILState_STATE;
+	typedef ssize_t Py_ssize_t;
+
+    // Init, Finalize
+    typedef int Py_IsInitialized_t();
+    dyn_load(Py_IsInitialized);
+
+    typedef void Py_InitializeEx_t(int initsigs);
+    dyn_load(Py_InitializeEx);
+
+    typedef void Py_FinalizeEx_t();
+    dyn_load(Py_FinalizeEx);
+
+    // Interpreter init & destruction
+    typedef PyThreadState* Py_NewInterpreter_t();
+    dyn_load(Py_NewInterpreter);
+
+    typedef Py_EndInterpreter_t(PyThreadState* tstate);
+    dyn_load(Py_EndInterpreter);
+
+    // GIL 
+    typedef PyGILState_STATE PyGILState_Ensure_t();
+    dyn_load(PyGILState_Ensure);
+
+    // REF
+    typedef void Py_INCREF_t(PyObject* o);
+    dyn_load(Py_INCREF);
+
+    typedef void Py_XINCREF_t(PyObject*);
+    dyn_load(Py_XINCREF);
+ 
+    typedef void Py_DECREF_t(PyObject* o);
+    dyn_load(Py_DECREF);
+
+    typedef void Py_XDECREF_t(PyObject*);
+    dyn_load(Py_XDECREF);
+
+    // Threadding
+    typedef void PyEval_InitThreads_t();
+    dyn_load(PyEval_InitThreads);
+    
+    typedef int PyEval_ThreadsInitialized_t();
+    dyn_load(PyEval_ThreadsInitialized);
+
+    typedef PyThreadState* PyEval_SaveThread_t();
+    dyn_load(PyEval_SaveThread);
+
+    typedef void PyEval_RestoreThread_t(PyThreadState* tstate);
+    dyn_load(PyEval_RestoreThread);
+
+    typedef void PyEval_AcquireThread_t(PyThreadState* tstate);
+    dyn_load(PyEval_AcquireThread);
+
+    // Bytes, Strings
+    typedef PyObject* PyUnicode_FromString_t(const char* str);
+    dyn_load(PyUnicode_FromString);
+
+	// List
+	typedef int PyList_Append_t(PyObject* list, PyObject* item);
+	dyn_load(PyList_Append);
+    
+	// Long
+	typedef long PyLong_AsLong_t(PyObject* pylong);
+	dyn_load(PyLong_AsLong);
+
+	typedef PyObject PyLong_FromLong_t(long v);
+	dyn_load(PyLong_FromLong);
+
+    // Tuple
+    typedef PyObject* PyTuple_New_t(Py_ssize_t len);
+    dyn_load(PyTuple_New);
+
+    typedef int PyTuple_SetItem_t(PyObject *p, Py_ssize_t pos, PyObject *o);
+    dyn_load(PyTuple_SetItem);
+
+    // Import
+    typedef PyObject* PyImport_Import_t(PyObject* name);
+    dyn_load(PyImport_Import);
+    
+    // Object
+    typedef PyObject* PyObject_CallObject_t(PyObject *callable_object, PyObject *args);
+    dyn_load(PyObject_CallObject);
+    
+    typedef PyObject* PyObject_GetAttrString_t(PyObject* o, const char* attr_name);
+    dyn_load(PyObject_GetAttrString);
+
+    // Callable
+    typedef int PyCallable_Check_t(PyObject* o);
+    dyn_load(PyCallable_Check);
+
+    // Run
+    typedef int PyRun_SimpleString_t(const char* command);
+    dyn_load(PyRun_SimpleString);
+	
+	// Sys
+	typedef PyObject* PySys_GetObject_t(char* name);
+	dyn_load(PySys_GetObject);
+
+	// Error
+	typedef PyObject* PyErr_Occured_t();
+	dyn_load(PyErr_Occurred);
+
+	typedef void PyErr_Print_t();
+	dyn_load(PyErr_Print);
+}
+
+void py_init_env(){   
+  // depending on the availability of python dev environments, we want
+  // to initialize both environments 
+  //
+#if PY_2_BINDINGS
+    if(this->_py2_api["Py_IsInitialized"]()) {
+       _initialized_outside2 = true;
+       this->_gstate2 = this->_py2_api["PyGILState_Ensure"]();
+    } else {
+        this->_py2_api["Py_InitializeEx"](NO_SIGNAL_HANDLERS);
+    }
+    this->_py2_api["PyEval_InitThreads"]();
+    this->_py2_api["PyRun_SimpleString"]("import sys; sys.argv='atomspace'\n");
+    this->_main_thread_state2 = this->_py2_api["PyEval_SaveThread"]();
+#endif
+
+#if PY_3_BINDINGS
+   if(this->_py3_api["Py_IsInitialized"]()) {
+       _initialized_outside3 = true;
+       this->_gstate3 = this->_py3_api["PyGILState_Ensure"]();
+    } else {
+        this->_py3_api["Py_InitializeEx"](NO_SIGNAL_HANDLERS);
+    }
+    this->_py3_api["PyEval_InitThreads"]();
+    this->_py3_api["PyRun_SimpleString"]("import sys; sys.argv='atomspace'\n");
+    this->_main_thread_state3 = this->_py3_api["PyEval_SaveThread"]();
+#endif
+}
+
+void py_load_oc_pkg() {
+#if PY_2_BINDINGS
+	PyObject* py_2_sys_path = this->_py2_api["PySys_GetObject"]((char*) "path");
+	this->_py2_api["PyList_Append"](py_2_sys_path, \
+            PyUnicode_FromString("@PYTHON2_SITE_PACKAGES@/opencog"));
+	this->_py2_api["PyRun_SimpleString"]("import opencog");
+#elif PY_3_BINDINGS
+	PyObject* py_3_sys_path = this->_py3_api["PySys_GetObject"]((char*) "path");
+	this->_py3_api["PyList_Append"](py_3_sys_path, \
+            PyUnicode_FromString("@PYTHON3_SITE_PACKAGES@/opencog"));
+	this->_py3_api["PyRun_SimpleString"]("import opencog");
+    this->_root
+#endif
+}  
+
+void set_atomspace(AtomSpace* as) {
+    this->_atomspace = py_atomspace(as);
+}
+
+PyObject* get_atomspace() {
+    return this->_atomspace;
+}
+
+PyObject* run_py_command(const char* command, int py_version) {
+    map<string, boost::any> py_api;
+	
+	if (py_version == 2) {
+		py_api = this->_py2_api;
+	} else if (py_version == 3) {
+		py_api = this-> _py3_api;
+	} else {
+		throw opencog::RuntimeException(TRACE_INFO,
+                "Please specify a correct Python version (either 2 or 3)");
+		continue; 
+	  }
+	py_api["PyRun_SimpleString"](command);
+}
+
+PyObject* run_py_script(const char* py_file_path, const char * func_name, const char* args) {
+    map<string, boost::any> py_api;
+	int py_version = check_shebang(py_file_path);
+
+	if (py_version == 2) {
+		py_api = this->_py2_api;
+	} else if (py_version == 3) {
+		py_api = this-> _py3_api;
+	} else {
+		throw opencog::RuntimeException(TRACE_INFO,
+                "Please specify a correct Python version (either 2 or 3)");
+		return; 
+	}
+
+	PyObject *pName, *pModule, *pFunc;
+    PyObject *pArgs, *pValue;
+    int i;
+
+    pName = py_api["PyUnicode_FromString"](py_file_path);
+    
+    pModule = py_api["PyImport_Import"](pName);
+    py_api["Py_DECREF"](pName);
+
+    if (pModule != NULL) {
+        pFunc = py_api["PyObject_GetAttrString"](pModule, argv[2]);
+        /* pFunc is a new reference incref? */
+
+        if (pFunc && py_api["PyCallable_Check"](pFunc)) {
+            pArgs = py_api["PyTuple_New"](argc - 3);
+            for (i = 0; i < argc - 3; ++i) {
+                pValue = py_api["PyLong_FromLong"](atoi(argv[i + 3]));
+                if (!pValue) {
+                    py_api["Py_DECREF"](pArgs);
+                    py_api["Py_DECREF"](pModule);
+                    cerr << "Cannot convert argument\n" << endl;
+                    return 1;
+                }
+                /* pValue reference stolen here: decref? */
+                py_api["PyTuple_SetItem"](pArgs, i, pValue);
+            }
+            pValue = py_api["PyObject_CallObject"](pFunc, pArgs);
+            py_api["Py_DECREF"](pArgs);
+            if (pValue != NULL) { 
+                return pValue;
+                py_api["Py_DECREF"](pValue);
+            } else { 
+                py_api["Py_DECREF"](pFunc);
+                py_api["Py_DECREF"](pModule);
+                py_api["PyErr_Print"]();
+                err << "Call failed" << endl;
+                return 1;
+            }
+        } else { 
+            if (py_api["PyErr_Occurred"]())
+                py_api["PyErr_Print"]();
+            cerr << "Cannot find function" << argv[2] << endl;
+        }
+        py_api["Py_XDECREF"](pFunc);
+        py_api["Py_DECREF"](pModule);
+    } else { 
+        py_api["PyErr_Print"]();
+        cerr << "Failed to load" << argv[1] << endl;
+        return 1;
+    }
+}
+
+Handle apply(AtomSpace* as, const string& func, Handle varargs) {
+    SaveAS save_as(this, as);
+    
+    PyObject* returned_atom = run_py_script()
+}
+
+int check_shebang(const char* py_file_path) {
+	string she_bang;
+
+	ifstream infile(py_file_path); 
+    if (infile.good())
+    { 
+        getline(infile, she_bang);
+    } else {
+        cerr << "Couldnt read the file; please enter a valid python file name" << endl;
+        return -1;
+    }
+    infile.close();
+
+    if(she _bang[0] == '#' && she_bang[1] == '!') {
+        if(she_bang.find('2') != -1) {
+			return 2;
+        } else if(she_bang.find('3') != -1) {
+			return 3;
+        } else {
+            cerr << "Please add a valid shebang to your script e.g. #!/bin/python3" << endl;
+            return -1;
+		}
+    }
+}
+
+void check_dlopen_err(void* handle) {
+    if(!handle) 
+    {
+        cerr << "Error:" << dlerror() << endl;
+        return;
+    }
+}
+    
+void check_dlsym_err() {
+    const char* dlsym_error = dlerror();
+     if (dlsym_error) {
+		        cerr << "Cannot load symbol create: " << dlsym_error << '\n';
+                return;
+    }
+}
+
+void demo() {
+	// TODO
+    string path;
+    struct stat buffer; 
+    bool is_valid_file = false;
+   
+     do 
+    { 
+        cout << "Enter the valid absolute Path to a Python script:" << endl;
+        getline(cin, path);
+        is_valid_file = stat(path.c_str(), &buffer) == 0 ? true : false; 
+    } while (!is_valid_file);
+
+    string func_name;
+    cout << "Enter the function name" << endl;
+    getline(cin, func_name);
+
+    string args;
+    cout << "Enter the arguments" << endl;
+    getline(cin, args);
+    
+    run_py(path.c_str(), func_name.c_str(), args.c_str());
+    
+    cout << "Press Enter to Continue";
+    cin.ignore();
+
+}
+    } // namespace PythonEval
+} // namespace opencog
+#endif
