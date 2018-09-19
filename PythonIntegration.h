@@ -7,6 +7,7 @@
 #include <dlfcn.h>
 #include <boost/any.hpp>
 #include <pthread.h>
+#include <stdexcept>
 
 int NO_SIGNAL_HANDLERS = 0; // Py InitEx parameter; no signalhandlers as cpp threads take care of that (?)
 
